@@ -3,6 +3,8 @@ package io.yeomans.photoswipe;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
@@ -13,13 +15,16 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.net.Uri;
+import android.os.Handler;
 import android.provider.MediaStore;
 import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
+import android.util.Log;
 import android.util.Size;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -29,8 +34,12 @@ import android.view.SurfaceView;
 import android.widget.ImageView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,31 +52,53 @@ public class MainActivity extends ActionBarActivity {
     private float x1,x2;
     static final int MIN_DISTANCE = 300;
     int swipeDirection = -1;
-    CameraManager camera;
+    int faceNumber = 0;
+    String appPath;
+    CameraManager camManager;
+    CameraDevice cam;
+    CaptureRequest capRequest;
     StreamConfigurationMap streamMap;
+    ImageReader ir;
     boolean camConfigured = false;
+    Handler mBackgroundHandler;
+    private final ImageReader.OnImageAvailableListener mOnImageAvailableListener
+            = new ImageReader.OnImageAvailableListener() {
+
+        @Override
+        public void onImageAvailable(ImageReader reader) {
+            Log.d("Image", "Saving Image");
+            faceNumber++;
+            mBackgroundHandler.post(new ImageSaver(reader.acquireNextImage(), new File(appPath + "/" + faceNumber + ".jpg")));
+            mBackgroundHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    ImageView iv = (ImageView)findViewById(R.id.imageViewMain);
+                    iv.setImageURI(Uri.parse(appPath + "/"+faceNumber+".jpg"));
+
+                }
+            });
+        }
+
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         context = getApplicationContext();
-        getImage();
-        CameraManager camManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-        String frontCamera = "";
+        mBackgroundHandler = new Handler();
+
         try {
-            String[] idList = camManager.getCameraIdList();
-            for(String id : idList) {
-                CameraCharacteristics camChar = camManager.getCameraCharacteristics(id);
-                streamMap = camChar.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-                if(CameraCharacteristics.LENS_FACING_FRONT == camChar.get(CameraCharacteristics.LENS_FACING)) {
-                    frontCamera = id;
-                }
-            }
-            camManager.openCamera(frontCamera, new CamCallback(), null);
-        } catch (CameraAccessException e) {
+            PackageManager m = getPackageManager();
+            appPath = getPackageName();
+            PackageInfo p = m.getPackageInfo(appPath, 0);
+            appPath = p.applicationInfo.dataDir;
+        } catch (PackageManager.NameNotFoundException e) {
             e.printStackTrace();
         }
+
+        getImage();
+        openCam();
 
     }
 
@@ -146,12 +177,14 @@ public class MainActivity extends ActionBarActivity {
                 {
                     Toast.makeText(this, "left2right swipe", Toast.LENGTH_SHORT).show();
                     swipeDirection = 0;
+                    takePicture();
                 } else {
                     deltaX = x1 - x2;
                     if (deltaX > MIN_DISTANCE)
                     {
                         Toast.makeText(this, "right2left swipe", Toast.LENGTH_SHORT).show();
                         swipeDirection = 1;
+                        takePicture();
                     }
                 }
                 break;
@@ -159,19 +192,46 @@ public class MainActivity extends ActionBarActivity {
         return super.onTouchEvent(event);
     }
 
+    public void openCam() {
+        camManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+        String frontCamera = "";
+        try {
+            String[] idList = camManager.getCameraIdList();
+            for(String id : idList) {
+                CameraCharacteristics camChar = camManager.getCameraCharacteristics(id);
+                streamMap = camChar.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if(CameraCharacteristics.LENS_FACING_FRONT == camChar.get(CameraCharacteristics.LENS_FACING)) {
+                    frontCamera = id;
+                }
+            }
+            camManager.openCamera(frontCamera, new CamCallback(), mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void takePicture() {
+        Log.d("Image", "Camera Opened");
+        Size[] sizes = streamMap.getOutputSizes(ImageFormat.JPEG);
+        ir = ImageReader.newInstance(sizes[0].getWidth(), sizes[0].getHeight(), ImageFormat.JPEG, 2);
+        ir.setOnImageAvailableListener(mOnImageAvailableListener, mBackgroundHandler);
+        List<Surface> surfaceList = new ArrayList<Surface>();
+        surfaceList.add(ir.getSurface());
+        try {
+            cam.createCaptureSession(surfaceList,new CaptureSessionCallback(), mBackgroundHandler);
+            CaptureRequest.Builder capBuild = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            capBuild.addTarget(ir.getSurface());
+            capRequest = capBuild.build();
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+
     private class CamCallback extends CameraDevice.StateCallback {
 
         @Override
         public void onOpened(CameraDevice camera) {
-            Size[] sizes = streamMap.getOutputSizes(ImageFormat.JPEG);
-            ImageReader ir = ImageReader.newInstance(sizes[0].getWidth(), sizes[0].getHeight(), ImageFormat.JPEG, 2);
-            List<Surface> surfaceList = new ArrayList<Surface>();
-            surfaceList.add(ir.getSurface());
-            try {
-                camera.createCaptureSession(surfaceList,new CaptureCallback(), null);
-            } catch (CameraAccessException e) {
-                e.printStackTrace();
-            }
+            cam = camera;
         }
 
         @Override
@@ -185,16 +245,72 @@ public class MainActivity extends ActionBarActivity {
         }
     }
 
-    private class CaptureCallback extends CameraCaptureSession.StateCallback {
+    private class CaptureSessionCallback extends CameraCaptureSession.StateCallback {
 
         @Override
         public void onConfigured(CameraCaptureSession session) {
+            Log.d("Image", "Camera Configured");
             camConfigured = true;
+            try {
+                session.capture(capRequest, new CapCallback(), mBackgroundHandler);
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
         }
 
         @Override
         public void onConfigureFailed(CameraCaptureSession session) {
 
         }
+    }
+
+    private class CapCallback extends CameraCaptureSession.CaptureCallback {
+         @Override
+        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+             Log.d("Image","Capture Completed");
+         }
+    }
+
+    private static class ImageSaver implements Runnable {
+
+        /**
+         * The JPEG image
+         */
+        private final Image mImage;
+        /**
+         * The file we save the image into.
+         */
+        private final File mFile;
+
+        public ImageSaver(Image image, File file) {
+            mImage = image;
+            mFile = file;
+        }
+
+        @Override
+        public void run() {
+            ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            FileOutputStream output = null;
+            try {
+                output = new FileOutputStream(mFile);
+                output.write(bytes);
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                mImage.close();
+                if (null != output) {
+                    try {
+                        output.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
     }
 }
