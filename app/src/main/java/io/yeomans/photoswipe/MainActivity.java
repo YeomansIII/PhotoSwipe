@@ -6,9 +6,12 @@ import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
-import android.graphics.SurfaceTexture;
-import android.hardware.Camera;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -16,21 +19,21 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.ExifInterface;
 import android.media.Image;
 import android.media.ImageReader;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Handler;
 import android.provider.MediaStore;
-import android.support.v7.app.ActionBarActivity;
-import android.os.Bundle;
 import android.util.Log;
 import android.util.Size;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.Surface;
-import android.view.SurfaceView;
 import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.Toast;
@@ -39,7 +42,6 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,10 +57,13 @@ public class MainActivity extends Activity {
     int swipeDirection = -1;
     int faceNumber = 0;
     String appPath;
+    Bitmap myBitmap;
     CameraManager camManager;
     CameraDevice cam;
+    CameraCaptureSession camSession;
     CaptureRequest capRequest;
     StreamConfigurationMap streamMap;
+    Rect cameraArraySize;
     ImageReader ir;
     boolean camConfigured = false;
     Handler mBackgroundHandler;
@@ -70,14 +75,6 @@ public class MainActivity extends Activity {
             Log.d("Image", "Saving Image");
             faceNumber++;
             mBackgroundHandler.post(new ImageSaver(reader.acquireNextImage(), new File(appPath + "/" + faceNumber + ".jpg")));
-            mBackgroundHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    ImageView iv = (ImageView)findViewById(R.id.imageViewMain);
-                    iv.setImageURI(Uri.parse(appPath + "/"+faceNumber+".jpg"));
-
-                }
-            });
         }
 
     };
@@ -194,6 +191,13 @@ public class MainActivity extends Activity {
         return super.onTouchEvent(event);
     }
 
+    private static int exifToDegrees(int exifOrientation) {
+        if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_90) { return 90; }
+        else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_180) {  return 180; }
+        else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_270) {  return 270; }
+        return 0;
+    }
+
     public void openCam() {
         camManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         String frontCamera = "";
@@ -204,6 +208,7 @@ public class MainActivity extends Activity {
                 streamMap = camChar.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                 if(CameraCharacteristics.LENS_FACING_FRONT == camChar.get(CameraCharacteristics.LENS_FACING)) {
                     frontCamera = id;
+                    cameraArraySize = camChar.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
                 }
             }
             camManager.openCamera(frontCamera, new CamCallback(), mBackgroundHandler);
@@ -213,17 +218,32 @@ public class MainActivity extends Activity {
     }
 
     public void takePicture() {
-        Log.d("Image", "Camera Opened");
-        Size[] sizes = streamMap.getOutputSizes(ImageFormat.JPEG);
-        ir = ImageReader.newInstance(sizes[0].getWidth(), sizes[0].getHeight(), ImageFormat.JPEG, 2);
-        ir.setOnImageAvailableListener(mOnImageAvailableListener, mBackgroundHandler);
-        List<Surface> surfaceList = new ArrayList<Surface>();
-        surfaceList.add(ir.getSurface());
         try {
-            cam.createCaptureSession(surfaceList,new CaptureSessionCallback(), mBackgroundHandler);
             CaptureRequest.Builder capBuild = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             capBuild.addTarget(ir.getSurface());
+            int rotation = this.getWindowManager().getDefaultDisplay().getRotation();
+            Log.d("Image", "Rotation = " + rotation);
+            capBuild.set(CaptureRequest.JPEG_ORIENTATION, rotation);
+            //capBuild.set(CaptureRequest.CONTROL_CAPTURE_INTENT, CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE);
+            //capBuild.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+            //capBuild.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
+            //capBuild.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
+            capBuild.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO);
+            capBuild.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            capBuild.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO);
+            capBuild.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
+            //capBuild.set(CaptureRequest.CONTROL_EFFECT_MODE, CaptureRequest.CONTROL_EFFECT_MODE_NEGATIVE);
+            //capBuild.set(CaptureRequest.CONTROL_AWB_LOCK, false);
+            //capBuild.set(CaptureRequest.BLACK_LEVEL_LOCK, false);
+            //MeteringRectangle mr = new MeteringRectangle(cameraArraySize.centerX()-10, cameraArraySize.centerY()-10, 20, 20, MeteringRectangle.METERING_WEIGHT_MAX);
+            //MeteringRectangle[] mrs = {mr};
+            //capBuild.set(CaptureRequest.CONTROL_AWB_REGIONS, mrs);
             capRequest = capBuild.build();
+            try {
+                camSession.capture(capRequest, new CapCallback(), mBackgroundHandler);
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -233,7 +253,18 @@ public class MainActivity extends Activity {
 
         @Override
         public void onOpened(CameraDevice camera) {
+            Log.d("Image", "Camera Opened");
             cam = camera;
+            Size[] sizes = streamMap.getOutputSizes(ImageFormat.JPEG);
+            ir = ImageReader.newInstance(sizes[0].getWidth(), sizes[0].getHeight(), ImageFormat.JPEG, 2);
+            ir.setOnImageAvailableListener(mOnImageAvailableListener, mBackgroundHandler);
+            List<Surface> surfaceList = new ArrayList<Surface>();
+            surfaceList.add(ir.getSurface());
+            try {
+                cam.createCaptureSession(surfaceList, new CaptureSessionCallback(), mBackgroundHandler);
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
         }
 
         @Override
@@ -253,11 +284,7 @@ public class MainActivity extends Activity {
         public void onConfigured(CameraCaptureSession session) {
             Log.d("Image", "Camera Configured");
             camConfigured = true;
-            try {
-                session.capture(capRequest, new CapCallback(), mBackgroundHandler);
-            } catch (CameraAccessException e) {
-                e.printStackTrace();
-            }
+            camSession = session;
         }
 
         @Override
@@ -270,6 +297,29 @@ public class MainActivity extends Activity {
          @Override
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
              Log.d("Image","Capture Completed");
+             mBackgroundHandler.post(new Runnable() {
+                 @Override
+                 public void run() {
+                     ImageView iv = (ImageView) findViewById(R.id.imageViewMain);
+                     myBitmap = BitmapFactory.decodeFile(appPath + "/" + faceNumber + ".jpg");
+                     try {
+                         ExifInterface exif = new ExifInterface(appPath + "/" + faceNumber + ".jpg");
+                         int rotation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                         int rotationInDegrees = exifToDegrees(rotation);
+                         int deg = rotationInDegrees;
+                         Matrix matrix = new Matrix();
+                         if (rotation != 0f) {
+                             matrix.preRotate(rotationInDegrees);
+                             myBitmap = Bitmap.createBitmap(myBitmap, 0, 0, myBitmap.getWidth(), myBitmap.getHeight(), matrix, true);
+                         }
+                         iv.setImageBitmap(myBitmap);
+                     } catch (IOException e) {
+                         e.printStackTrace();
+                     }
+
+
+                 }
+             });
          }
     }
 
